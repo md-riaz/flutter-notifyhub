@@ -1,17 +1,22 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
+import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'api_service.dart';
 import 'fcm_service.dart';
 import 'theme.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp();
-  await FcmService().init();
+  try {
+    await Firebase.initializeApp();
+    await FcmService().init();
+  } catch (e) {
+    debugPrint("Firebase init failed: $e");
+  }
   runApp(
     ChangeNotifierProvider(
       create: (context) => AppState(),
@@ -26,7 +31,8 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'FCM Push Notification',
+      title: 'NotifyHub',
+      debugShowCheckedModeBanner: false,
       theme: AppTheme.lightTheme,
       darkTheme: AppTheme.darkTheme,
       home: const MyHomePage(),
@@ -35,28 +41,42 @@ class MyApp extends StatelessWidget {
 }
 
 class AppState with ChangeNotifier {
+  final ApiService _apiService = ApiService();
   String? _fcmToken;
-  String? get fcmToken => _fcmToken;
+  String? _apiKey;
+  String? get apiKey => _apiKey;
 
-  final TextEditingController titleController = TextEditingController(text: 'sample');
-  final TextEditingController contentController = TextEditingController(text: 'test content');
-  final TextEditingController urlController = TextEditingController(text: 'http://google.com');
+  final TextEditingController titleController = TextEditingController(text: 'Hello World');
+  final TextEditingController contentController = TextEditingController(text: 'Push notification test content');
+  final TextEditingController urlController = TextEditingController(text: 'https://flutter.dev');
 
   List<Map<String, dynamic>> _history = [];
   List<Map<String, dynamic>> get history => _history;
 
   AppState() {
     _loadHistory();
-    _loadToken();
+    _initServices();
   }
 
-  void _loadToken() async {
-    _fcmToken = await FcmService().getToken();
+  Future<void> _initServices() async {
+    _apiKey = null;
+    notifyListeners();
+
+    try {
+      _fcmToken = await FcmService().getToken();
+    } catch (e) {
+      _fcmToken = "Mock-FCM-Token-${DateTime.now().millisecondsSinceEpoch}";
+    }
+
+    // Mock device info
+    const deviceInfo = "Flutter App v1.0";
+    _apiKey = await _apiService.getApiKey(_fcmToken!, deviceInfo);
+
     notifyListeners();
   }
 
-  void refreshToken() {
-    _loadToken();
+  void refreshApiKey() {
+    _initServices();
   }
 
   Future<void> _loadHistory() async {
@@ -83,110 +103,267 @@ class MyHomePage extends StatelessWidget {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Push Notification API'),
+        title: const Text('NotifyHub'),
         actions: [
           IconButton(
-            icon: const Icon(Icons.info_outline),
             onPressed: () => _showHowToUseDialog(context),
+            icon: const Icon(Icons.help_outline_rounded),
           ),
-          IconButton(
-            icon: const Icon(Icons.history),
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (context) => const HistoryScreen()),
-            ),
+          Stack(
+            children: [
+              IconButton(
+                onPressed: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => const HistoryScreen()),
+                ),
+                icon: const Icon(Icons.notifications_none_rounded),
+              ),
+              if (appState.history.isNotEmpty)
+                Positioned(
+                  right: 8,
+                  top: 8,
+                  child: Container(
+                    padding: const EdgeInsets.all(4),
+                    decoration: const BoxDecoration(
+                      color: Colors.red,
+                      shape: BoxShape.circle,
+                    ),
+                    constraints: const BoxConstraints(
+                      minWidth: 8,
+                      minHeight: 8,
+                    ),
+                  ),
+                ),
+            ],
           ),
+          const SizedBox(width: 8),
         ],
       ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _buildInfoCard('Your API KEY', appState.fcmToken ?? 'Loading...'),
-            const SizedBox(height: 16),
-            _buildInfoCard('Your API URL', 'http://xdroid.net/api/message?k=${appState.fcmToken ?? ''}&t=title&c=contents&u=http://Address-you-want-to-notice'),
-            const SizedBox(height: 16),
-            _buildTestForm(context, appState),
-            const SizedBox(height: 16),
-            ElevatedButton.icon(
-              onPressed: () => appState.refreshToken(),
-              icon: const Icon(Icons.refresh),
-              label: const Text('REFRESH API KEY'),
+      body: SafeArea(
+        child: Container(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [
+                AppTheme.backgroundColor,
+                AppTheme.backgroundColor.withAlpha(204),
+                Colors.white,
+              ],
             ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildInfoCard(String title, String content) {
-    return Card(
-      elevation: 2,
-      child: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(title, style: GoogleFonts.roboto(fontSize: 18, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            SelectableText(content, style: GoogleFonts.openSans(fontSize: 16)),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildTestForm(BuildContext context, AppState appState) {
-    return Card(
-      elevation: 2,
-      child: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Test Submission Form', style: GoogleFonts.roboto(fontSize: 18, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 16),
-            TextFormField(
-              initialValue: appState.fcmToken,
-              decoration: const InputDecoration(labelText: 'k'),
-              readOnly: true,
-            ),
-            TextFormField(
-              controller: appState.titleController,
-              decoration: const InputDecoration(labelText: 't'),
-            ),
-            TextFormField(
-              controller: appState.contentController,
-              decoration: const InputDecoration(labelText: 'c'),
-            ),
-            TextFormField(
-              controller: appState.urlController,
-              decoration: const InputDecoration(labelText: 'u'),
-            ),
-            const SizedBox(height: 24),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          ),
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                ElevatedButton.icon(
-                  onPressed: () {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Notification sent')),
-                    );
-                  },
-                  icon: const Icon(Icons.send),
-                  label: const Text('SUBMIT'),
+                _buildHeaderSection(),
+                const SizedBox(height: 32),
+                _buildTokenSection(context, appState),
+                const SizedBox(height: 24),
+                _buildUrlSection(context, appState),
+                const SizedBox(height: 32),
+                _buildTestFormSection(context, appState),
+                const SizedBox(height: 40),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHeaderSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Service Dashboard',
+          style: TextStyle(
+            color: Colors.grey.shade600,
+            fontSize: 14,
+            fontWeight: FontWeight.w500,
+            letterSpacing: 1.2,
+          ),
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'Push Notification API',
+          style: TextStyle(
+            fontSize: 28,
+            fontWeight: FontWeight.w800,
+            color: Color(0xFF0F172A),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildTokenSection(BuildContext context, AppState appState) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Padding(
+          padding: EdgeInsets.only(left: 4, bottom: 12),
+          child: Text(
+            'API KEY',
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF64748B)),
+          ),
+        ),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    appState.apiKey ?? 'Generating key...',
+                    style: const TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                      color: AppTheme.primaryColor,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
-                ElevatedButton.icon(
-                  onPressed: () {},
-                  icon: const Icon(Icons.share),
-                  label: const Text('URL SHARE'),
+                IconButton(
+                  onPressed: () {
+                    if (appState.apiKey != null) {
+                      Clipboard.setData(ClipboardData(text: appState.apiKey!));
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Copied to clipboard')),
+                      );
+                    }
+                  },
+                  icon: const Icon(Icons.copy_rounded, size: 20),
+                  color: AppTheme.primaryColor,
+                ),
+                IconButton(
+                  onPressed: () => appState.refreshApiKey(),
+                  icon: const Icon(Icons.refresh_rounded, size: 20),
+                  color: AppTheme.primaryColor,
                 ),
               ],
             ),
-          ],
+          ),
         ),
-      ),
+      ],
+    );
+  }
+
+  Widget _buildUrlSection(BuildContext context, AppState appState) {
+    final apiUrl = 'http://xdroid.net/api/message?k=${appState.apiKey ?? 'YOUR_API_KEY'}&t=title&c=contents&u=url';
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Padding(
+          padding: EdgeInsets.only(left: 4, bottom: 12),
+          child: Text(
+            'API ENDPOINT',
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF64748B)),
+          ),
+        ),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Base URL',
+                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF1E293B)),
+                ),
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.blue.shade50,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: SelectableText(
+                    apiUrl,
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: Colors.blue.shade800,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildTestFormSection(BuildContext context, AppState appState) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Padding(
+          padding: EdgeInsets.only(left: 4, bottom: 12),
+          child: Text(
+            'TEST CONSOLE',
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF64748B)),
+          ),
+        ),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              children: [
+                TextField(
+                  controller: appState.titleController,
+                  decoration: const InputDecoration(
+                    labelText: 'Notification Title',
+                    prefixIcon: Icon(Icons.title_rounded),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: appState.contentController,
+                  maxLines: 3,
+                  decoration: const InputDecoration(
+                    labelText: 'Content Message',
+                    prefixIcon: Icon(Icons.message_rounded),
+                    alignLabelWithHint: true,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: appState.urlController,
+                  decoration: const InputDecoration(
+                    labelText: 'Deep Link URL',
+                    prefixIcon: Icon(Icons.link_rounded),
+                  ),
+                ),
+                const SizedBox(height: 32),
+                ElevatedButton(
+                  onPressed: () {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        backgroundColor: Colors.green.shade600,
+                        content: const Row(
+                          children: [
+                            Icon(Icons.check_circle_outline, color: Colors.white),
+                            SizedBox(width: 12),
+                            Text('Test simulation sent successfully'),
+                          ],
+                        ),
+                        behavior: SnackBarBehavior.floating,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      ),
+                    );
+                  },
+                  child: const Text('Send Test Push'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -194,32 +371,80 @@ class MyHomePage extends StatelessWidget {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('How to use'),
+        title: const Row(
+          children: [
+            Icon(Icons.lightbulb_outline_rounded, color: AppTheme.primaryColor),
+            SizedBox(width: 12),
+            Text('Quick Start Guide'),
+          ],
+        ),
         content: const SingleChildScrollView(
           child: ListBody(
             children: [
-              Text('Simple push notification receiver with easy REST API to send messages'),
-              SizedBox(height: 16),
-              Text('1. Make a GET / POST request via HTTP / HTTPS using the API Key displayed in the app'),
-              SizedBox(height: 8),
-              Text('2. The following parameters can be set'),
-              Padding(
-                padding: EdgeInsets.only(left: 16.0),
-                child: Text('k=API Key (required)\nt=title\nc=content\nu=URL to open when clicked'),
+              _GuideItem(
+                step: '1',
+                title: 'Copy API Key',
+                desc: 'Your unique API key is used to authenticate with the push notification service.',
               ),
-              SizedBox(height: 8),
-              Text('3. API Key can be recreated'),
-              SizedBox(height: 8),
-              Text('4. You can check from the test submission form'),
-              SizedBox(height: 8),
-              Text('5. Sample request'),
+              _GuideItem(
+                step: '2',
+                title: 'Construct Request',
+                desc: 'Send a GET or POST request to the endpoint with required parameters: k (key), t (title), c (content).',
+              ),
+              _GuideItem(
+                step: '3',
+                title: 'Handle Deep Links',
+                desc: 'Use the optional "u" parameter to redirect users to a specific URL when they tap the notification.',
+              ),
             ],
           ),
         ),
         actions: [
           TextButton(
-            child: const Text('OK'),
+            child: const Text('GOT IT'),
             onPressed: () => Navigator.of(context).pop(),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _GuideItem extends StatelessWidget {
+  final String step;
+  final String title;
+  final String desc;
+
+  const _GuideItem({required this.step, required this.title, required this.desc});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 20),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: AppTheme.primaryColor.withAlpha(26),
+              shape: BoxShape.circle,
+            ),
+            child: Text(
+              step,
+              style: const TextStyle(color: AppTheme.primaryColor, fontWeight: FontWeight.bold),
+            ),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                const SizedBox(height: 4),
+                Text(desc, style: TextStyle(color: Colors.grey.shade600, fontSize: 13)),
+              ],
+            ),
           ),
         ],
       ),
@@ -236,36 +461,112 @@ class HistoryScreen extends StatelessWidget {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('History'),
+        title: const Text('Activity History'),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.delete_forever),
-            onPressed: () => appState.clearHistory(),
-          )
+          if (appState.history.isNotEmpty)
+            TextButton.icon(
+              onPressed: () => appState.clearHistory(),
+              icon: const Icon(Icons.delete_sweep_rounded, size: 20),
+              label: const Text('Clear'),
+            ),
+          const SizedBox(width: 8),
         ],
       ),
-      body: ListView.builder(
-        itemCount: appState.history.length,
-        itemBuilder: (context, index) {
-          final item = appState.history[index];
-          final timestamp = DateTime.parse(item['timestamp']);
-          final formattedDate = DateFormat('yyyy-MM-dd HH:mm').format(timestamp);
-
-          return Card(
-            margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            child: ListTile(
-              title: Text(item['title'], style: GoogleFonts.roboto(fontWeight: FontWeight.bold)),
-              subtitle: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(item['body']),
-                  if (item['url'] != null) Text(item['url'], style: const TextStyle(color: Colors.blue)),
-                ],
+      body: SafeArea(
+        child: appState.history.isEmpty
+            ? Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.notifications_off_outlined, size: 64, color: Colors.grey.shade300),
+                    const SizedBox(height: 16),
+                    Text(
+                      'No notifications yet',
+                      style: TextStyle(color: Colors.grey.shade500, fontSize: 16),
+                    ),
+                  ],
+                ),
+              )
+            : ListView.builder(
+                padding: const EdgeInsets.all(16),
+                itemCount: appState.history.length,
+                itemBuilder: (context, index) {
+                  final item = appState.history[index];
+                  final timestamp = DateTime.parse(item['timestamp']);
+                  final formattedDate = DateFormat('MMM d, HH:mm').format(timestamp);
+        
+                  return Container(
+                    margin: const EdgeInsets.only(bottom: 12),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: Colors.grey.shade100),
+                    ),
+                    child: ListTile(
+                      contentPadding: const EdgeInsets.all(16),
+                      leading: Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: AppTheme.primaryColor.withAlpha(26),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: const Icon(Icons.notifications_active_rounded, color: AppTheme.primaryColor),
+                      ),
+                      title: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Expanded(
+                            child: Text(
+                              item['title'],
+                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          Text(
+                            formattedDate,
+                            style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
+                          ),
+                        ],
+                      ),
+                      subtitle: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const SizedBox(height: 8),
+                          Text(
+                            item['body'],
+                            style: TextStyle(color: Colors.grey.shade700, height: 1.4),
+                          ),
+                          if (item['url'] != null && item['url'].toString().isNotEmpty) ...[
+                            const SizedBox(height: 12),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: Colors.grey.shade50,
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Icon(Icons.link_rounded, size: 14, color: AppTheme.secondaryColor),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    item['url'],
+                                    style: const TextStyle(
+                                      color: AppTheme.secondaryColor,
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  );
+                },
               ),
-              trailing: Text(formattedDate),
-            ),
-          );
-        },
       ),
     );
   }
