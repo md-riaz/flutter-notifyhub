@@ -58,7 +58,16 @@ class AppState with ChangeNotifier {
     _initServices();
   }
 
-  Future<void> _initServices() async {
+  Future<void> _initServices({bool forceRefresh = false}) async {
+    final prefs = await SharedPreferences.getInstance();
+    final storedApiKey = prefs.getString('api_key');
+
+    if (storedApiKey != null && storedApiKey.isNotEmpty && !forceRefresh) {
+      _apiKey = storedApiKey;
+      notifyListeners();
+      return;
+    }
+
     _apiKey = null;
     notifyListeners();
 
@@ -68,15 +77,17 @@ class AppState with ChangeNotifier {
       _fcmToken = "Mock-FCM-Token-${DateTime.now().millisecondsSinceEpoch}";
     }
 
-    // Mock device info
     const deviceInfo = "Flutter App v1.0";
-    _apiKey = await _apiService.getApiKey(_fcmToken!, deviceInfo);
+    final newApiKey = await _apiService.getApiKey(_fcmToken!, deviceInfo);
+    
+    await prefs.setString('api_key', newApiKey);
+    _apiKey = newApiKey;
 
     notifyListeners();
   }
 
   void refreshApiKey() {
-    _initServices();
+    _initServices(forceRefresh: true);
   }
 
   Future<void> _loadHistory() async {
@@ -161,7 +172,7 @@ class MyHomePage extends StatelessWidget {
                 const SizedBox(height: 32),
                 _buildTokenSection(context, appState),
                 const SizedBox(height: 24),
-                _buildUrlSection(context, appState),
+                _buildUrlSection(context, app-State),
                 const SizedBox(height: 32),
                 _buildTestFormSection(context, appState),
                 const SizedBox(height: 40),
