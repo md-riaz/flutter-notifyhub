@@ -54,17 +54,37 @@ function sendError($message, $statusCode = 400) {
 }
 
 /**
+ * Get request headers with fallback for different PHP environments
+ */
+function getRequestHeaders() {
+    if (function_exists('getallheaders')) {
+        return getallheaders();
+    }
+    
+    // Fallback for environments where getallheaders() is not available (CGI/FastCGI)
+    $headers = [];
+    foreach ($_SERVER as $key => $value) {
+        if (substr($key, 0, 5) === 'HTTP_') {
+            $headerName = str_replace('_', '-', substr($key, 5));
+            $headers[$headerName] = $value;
+        }
+    }
+    return $headers;
+}
+
+/**
  * Validate secret key from request headers or query parameters
  */
 function validateSecretKey() {
     $secretKey = null;
     
-    // Check header first
-    $headers = getallheaders();
-    if (isset($headers['X-Secret-Key'])) {
-        $secretKey = $headers['X-Secret-Key'];
-    } elseif (isset($headers['x-secret-key'])) {
-        $secretKey = $headers['x-secret-key'];
+    // Check header first (case-insensitive lookup)
+    $headers = getRequestHeaders();
+    foreach ($headers as $name => $value) {
+        if (strtolower($name) === 'x-secret-key') {
+            $secretKey = $value;
+            break;
+        }
     }
     
     // Fall back to query parameter
@@ -179,6 +199,13 @@ function updateDeviceFcmToken($apiKey, $newFcmToken) {
 }
 
 /**
+ * URL-safe base64 encode for JWT
+ */
+function base64UrlEncode($data) {
+    return str_replace(['+', '/', '='], ['-', '_', ''], base64_encode($data));
+}
+
+/**
  * Get OAuth2 access token from service account
  */
 function getAccessToken() {
@@ -192,10 +219,10 @@ function getAccessToken() {
         return null;
     }
     
-    // Create JWT header
-    $header = base64_encode(json_encode(['alg' => 'RS256', 'typ' => 'JWT']));
+    // Create JWT header (URL-safe base64 encoded)
+    $headerEncoded = base64UrlEncode(json_encode(['alg' => 'RS256', 'typ' => 'JWT']));
     
-    // Create JWT claim set
+    // Create JWT claim set (URL-safe base64 encoded)
     $now = time();
     $claims = [
         'iss' => $serviceAccount['client_email'],
@@ -204,11 +231,10 @@ function getAccessToken() {
         'iat' => $now,
         'exp' => $now + 3600
     ];
-    $claimsEncoded = base64_encode(json_encode($claims));
+    $claimsEncoded = base64UrlEncode(json_encode($claims));
     
-    // Create signature
-    $signatureInput = str_replace(['+', '/', '='], ['-', '_', ''], $header) . '.' . 
-                      str_replace(['+', '/', '='], ['-', '_', ''], $claimsEncoded);
+    // Create signature input
+    $signatureInput = $headerEncoded . '.' . $claimsEncoded;
     
     $privateKey = openssl_pkey_get_private($serviceAccount['private_key']);
     if (!$privateKey) {
@@ -216,7 +242,7 @@ function getAccessToken() {
     }
     
     openssl_sign($signatureInput, $signature, $privateKey, OPENSSL_ALGO_SHA256);
-    $signatureEncoded = str_replace(['+', '/', '='], ['-', '_', ''], base64_encode($signature));
+    $signatureEncoded = base64UrlEncode($signature);
     
     $jwt = $signatureInput . '.' . $signatureEncoded;
     

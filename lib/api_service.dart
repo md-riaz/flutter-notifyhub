@@ -113,7 +113,12 @@ class ApiService {
             'success': false,
             'error': errorData['error'] ?? 'Server error: ${response.statusCode}',
           };
-        } catch (_) {
+        } on FormatException catch (e) {
+          developer.log(
+            'API Error: Failed to parse error response - $e',
+            name: 'com.notifyhub.app',
+            level: 800,
+          );
           return {
             'success': false,
             'error': 'Server error: ${response.statusCode}',
