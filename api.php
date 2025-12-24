@@ -32,8 +32,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 // Configuration
 // IMPORTANT: Change SECRET_KEY to a strong, unique value before deploying!
 define('SECRET_KEY', getenv('NOTIFYHUB_SECRET_KEY') ?: 'CHANGE_THIS_SECRET_KEY');
-// SECURITY: Place firebase-service-account.json outside web root or use .htaccess to block access
-define('FCM_SERVICE_ACCOUNT_PATH', getenv('FCM_SERVICE_ACCOUNT_JSON') ?: __DIR__ . '/firebase-service-account.json');
+// SECURITY: Place service-account.json outside web root or use .htaccess to block access
+define('SERVICE_ACCOUNT_KEY', __DIR__ . '/service-account.json');
+define('TOKEN_CACHE_FILE', __DIR__ . '/fcm_access_token.json');
+define('FCM_SCOPES', 'https://www.googleapis.com/auth/firebase.messaging');
 define('SQLITE_DB_PATH', __DIR__ . '/notifyhub.db');
 
 // Prevent using default secret key in production
@@ -210,14 +212,44 @@ function base64UrlEncode($data) {
 }
 
 /**
- * Get OAuth2 access token from service account
+ * Get cached access token or fetch a new one
  */
 function getAccessToken() {
-    if (!file_exists(FCM_SERVICE_ACCOUNT_PATH)) {
+    // Check if we have a cached token that's still valid
+    if (file_exists(TOKEN_CACHE_FILE)) {
+        $cachedData = json_decode(file_get_contents(TOKEN_CACHE_FILE), true);
+        if ($cachedData && isset($cachedData['access_token']) && isset($cachedData['expires_at'])) {
+            // Use cached token if it has at least 5 minutes remaining
+            if ($cachedData['expires_at'] > time() + 300) {
+                return $cachedData['access_token'];
+            }
+        }
+    }
+    
+    // Fetch new access token
+    $accessToken = fetchNewAccessToken();
+    
+    if ($accessToken) {
+        // Cache the token with expiration time (tokens are valid for 1 hour)
+        $cacheData = [
+            'access_token' => $accessToken,
+            'expires_at' => time() + 3600
+        ];
+        file_put_contents(TOKEN_CACHE_FILE, json_encode($cacheData));
+    }
+    
+    return $accessToken;
+}
+
+/**
+ * Fetch new OAuth2 access token from service account
+ */
+function fetchNewAccessToken() {
+    if (!file_exists(SERVICE_ACCOUNT_KEY)) {
         return null;
     }
     
-    $serviceAccount = json_decode(file_get_contents(FCM_SERVICE_ACCOUNT_PATH), true);
+    $serviceAccount = json_decode(file_get_contents(SERVICE_ACCOUNT_KEY), true);
     
     if (!$serviceAccount) {
         return null;
@@ -230,7 +262,7 @@ function getAccessToken() {
     $now = time();
     $claims = [
         'iss' => $serviceAccount['client_email'],
-        'scope' => 'https://www.googleapis.com/auth/firebase.messaging',
+        'scope' => FCM_SCOPES,
         'aud' => 'https://oauth2.googleapis.com/token',
         'iat' => $now,
         'exp' => $now + 3600
@@ -278,11 +310,11 @@ function getAccessToken() {
  */
 function sendFcmNotification($fcmToken, $title, $body, $data = []) {
     // Get service account for project ID
-    if (!file_exists(FCM_SERVICE_ACCOUNT_PATH)) {
+    if (!file_exists(SERVICE_ACCOUNT_KEY)) {
         return ['success' => false, 'error' => 'FCM service account not configured'];
     }
     
-    $serviceAccount = json_decode(file_get_contents(FCM_SERVICE_ACCOUNT_PATH), true);
+    $serviceAccount = json_decode(file_get_contents(SERVICE_ACCOUNT_KEY), true);
     if (!$serviceAccount || !isset($serviceAccount['project_id'])) {
         return ['success' => false, 'error' => 'Invalid service account configuration'];
     }

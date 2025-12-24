@@ -54,7 +54,7 @@ The `api.php` file in the root directory provides a REST API for device registra
 1. **Set up Firebase Service Account:**
    - Go to Firebase Console > Project Settings > Service Accounts
    - Generate a new private key and download the JSON file
-   - Save it as `firebase-service-account.json` in the same directory as `api.php`
+   - Save it as `service-account.json` in the same directory as `api.php`
    - **Security:** The included `.htaccess` file blocks HTTP access to this file on Apache servers
 
 2. **Configure Secret Key:**
@@ -70,6 +70,7 @@ The `api.php` file in the root directory provides a REST API for device registra
    - Set `APP_ENV=production` environment variable to enable default key detection
    - Use HTTPS for all API communication
    - The `.htaccess` file protects sensitive files on Apache servers
+   - Access tokens are cached in `fcm_access_token.json` for performance
 
 ### API Endpoints
 

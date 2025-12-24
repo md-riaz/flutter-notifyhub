@@ -47,4 +47,5 @@ app.*.map.json
 # NotifyHub API data files
 *.db
 notifyhub.db
-firebase-service-account.json
+service-account.json
+fcm_access_token.json
