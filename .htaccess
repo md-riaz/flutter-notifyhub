@@ -1,0 +1,22 @@
+# NotifyHub API Security Configuration
+# This file protects sensitive files from being accessed via HTTP
+
+# Protect service account JSON file
+<FilesMatch "service-account\.json$">
+    Require all denied
+</FilesMatch>
+
+# Protect token cache file
+<FilesMatch "fcm_access_token\.json$">
+    Require all denied
+</FilesMatch>
+
+# Protect SQLite database file
+<FilesMatch "\.db$">
+    Require all denied
+</FilesMatch>
+
+# Protect .htaccess itself
+<FilesMatch "^\.htaccess$">
+    Require all denied
+</FilesMatch>

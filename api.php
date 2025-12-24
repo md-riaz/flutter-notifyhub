@@ -1,0 +1,497 @@
+<?php
+/**
+ * NotifyHub REST API
+ * 
+ * This PHP script provides a REST API for the NotifyHub Flutter app.
+ * It handles API key registration and FCM push notification sending.
+ * 
+ * Endpoints:
+ * - POST /api.php?action=register - Register a device and get an API key
+ * - POST /api.php?action=send - Send a push notification
+ * - GET /api.php?action=message - Send a push notification (GET method)
+ * 
+ * Configuration:
+ * - Set NOTIFYHUB_SECRET_KEY environment variable or update the constant below
+ * - Set FCM_SERVICE_ACCOUNT_JSON environment variable or update the path below
+ */
+
+// Enable CORS for API access
+// Note: In production, replace '*' with your specific domain(s) for better security
+// Example: header('Access-Control-Allow-Origin: https://yourdomain.com');
+header('Access-Control-Allow-Origin: *');
+header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
+header('Access-Control-Allow-Headers: Content-Type, X-Secret-Key, Authorization');
+header('Content-Type: application/json');
+
+// Handle preflight requests
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(200);
+    exit();
+}
+
+// Configuration
+// IMPORTANT: Change SECRET_KEY to a strong, unique value before deploying!
+define('SECRET_KEY', getenv('NOTIFYHUB_SECRET_KEY') ?: 'CHANGE_THIS_SECRET_KEY');
+// SECURITY: Place service-account.json outside web root or use .htaccess to block access
+define('SERVICE_ACCOUNT_KEY', __DIR__ . '/service-account.json');
+define('TOKEN_CACHE_FILE', __DIR__ . '/fcm_access_token.json');
+define('FCM_SCOPES', 'https://www.googleapis.com/auth/firebase.messaging');
+define('SQLITE_DB_PATH', __DIR__ . '/notifyhub.db');
+
+// Prevent using default secret key in production
+if (SECRET_KEY === 'CHANGE_THIS_SECRET_KEY' && getenv('APP_ENV') === 'production') {
+    sendError('Server configuration error: Default secret key detected', 500);
+}
+
+/**
+ * Send JSON response
+ */
+function sendResponse($data, $statusCode = 200) {
+    http_response_code($statusCode);
+    echo json_encode($data);
+    exit();
+}
+
+/**
+ * Send error response
+ */
+function sendError($message, $statusCode = 400) {
+    sendResponse(['success' => false, 'error' => $message], $statusCode);
+}
+
+/**
+ * Get request headers with fallback for different PHP environments
+ */
+function getRequestHeaders() {
+    if (function_exists('getallheaders')) {
+        return getallheaders();
+    }
+    
+    // Fallback for environments where getallheaders() is not available (CGI/FastCGI)
+    $headers = [];
+    foreach ($_SERVER as $key => $value) {
+        if (substr($key, 0, 5) === 'HTTP_') {
+            $headerName = str_replace('_', '-', substr($key, 5));
+            $headers[$headerName] = $value;
+        }
+    }
+    return $headers;
+}
+
+/**
+ * Validate secret key from request headers or query parameters
+ */
+function validateSecretKey() {
+    $secretKey = null;
+    
+    // Check header first (case-insensitive lookup)
+    $headers = getRequestHeaders();
+    foreach ($headers as $name => $value) {
+        if (strtolower($name) === 'x-secret-key') {
+            $secretKey = $value;
+            break;
+        }
+    }
+    
+    // Fall back to query parameter
+    if (!$secretKey && isset($_GET['secret'])) {
+        $secretKey = $_GET['secret'];
+    }
+    
+    // Fall back to POST parameter
+    if (!$secretKey && isset($_POST['secret'])) {
+        $secretKey = $_POST['secret'];
+    }
+    
+    if (!$secretKey || $secretKey !== SECRET_KEY) {
+        sendError('Invalid or missing secret key', 401);
+    }
+    
+    return true;
+}
+
+/**
+ * Get SQLite database connection
+ */
+function getDatabase() {
+    static $db = null;
+    
+    if ($db === null) {
+        try {
+            $db = new PDO('sqlite:' . SQLITE_DB_PATH);
+            $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            $db->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+            
+            // Create devices table if it doesn't exist
+            $db->exec('
+                CREATE TABLE IF NOT EXISTS devices (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    fcm_token TEXT UNIQUE NOT NULL,
+                    api_key TEXT UNIQUE NOT NULL,
+                    device_info TEXT,
+                    registered_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ');
+            
+            // Create index on api_key for faster lookups
+            $db->exec('CREATE INDEX IF NOT EXISTS idx_api_key ON devices(api_key)');
+            
+        } catch (PDOException $e) {
+            sendError('Database connection failed: ' . $e->getMessage(), 500);
+        }
+    }
+    
+    return $db;
+}
+
+/**
+ * Generate a unique API key
+ */
+function generateApiKey() {
+    return 'API-' . strtoupper(bin2hex(random_bytes(12)));
+}
+
+/**
+ * Find device by FCM token
+ */
+function findDeviceByFcmToken($fcmToken) {
+    $db = getDatabase();
+    $stmt = $db->prepare('SELECT * FROM devices WHERE fcm_token = :fcm_token');
+    $stmt->execute([':fcm_token' => $fcmToken]);
+    return $stmt->fetch();
+}
+
+/**
+ * Find device by API key
+ */
+function findDeviceByApiKey($apiKey) {
+    $db = getDatabase();
+    $stmt = $db->prepare('SELECT * FROM devices WHERE api_key = :api_key');
+    $stmt->execute([':api_key' => $apiKey]);
+    return $stmt->fetch();
+}
+
+/**
+ * Register a new device
+ */
+function registerDevice($fcmToken, $apiKey, $deviceInfo) {
+    $db = getDatabase();
+    $stmt = $db->prepare('
+        INSERT INTO devices (fcm_token, api_key, device_info) 
+        VALUES (:fcm_token, :api_key, :device_info)
+    ');
+    return $stmt->execute([
+        ':fcm_token' => $fcmToken,
+        ':api_key' => $apiKey,
+        ':device_info' => $deviceInfo
+    ]);
+}
+
+/**
+ * Update device FCM token
+ */
+function updateDeviceFcmToken($apiKey, $newFcmToken) {
+    $db = getDatabase();
+    $stmt = $db->prepare('
+        UPDATE devices 
+        SET fcm_token = :fcm_token, updated_at = CURRENT_TIMESTAMP 
+        WHERE api_key = :api_key
+    ');
+    return $stmt->execute([
+        ':fcm_token' => $newFcmToken,
+        ':api_key' => $apiKey
+    ]);
+}
+
+/**
+ * URL-safe base64 encode for JWT
+ */
+function base64UrlEncode($data) {
+    return str_replace(['+', '/', '='], ['-', '_', ''], base64_encode($data));
+}
+
+/**
+ * Get cached access token or fetch a new one
+ */
+function getAccessToken() {
+    // Check if we have a cached token that's still valid
+    if (file_exists(TOKEN_CACHE_FILE)) {
+        $cachedData = json_decode(file_get_contents(TOKEN_CACHE_FILE), true);
+        if ($cachedData && isset($cachedData['access_token']) && isset($cachedData['expires_at'])) {
+            // Use cached token if it has at least 5 minutes remaining
+            if ($cachedData['expires_at'] > time() + 300) {
+                return $cachedData['access_token'];
+            }
+        }
+    }
+    
+    // Fetch new access token
+    $accessToken = fetchNewAccessToken();
+    
+    if ($accessToken) {
+        // Cache the token with expiration time (tokens are valid for 1 hour)
+        $cacheData = [
+            'access_token' => $accessToken,
+            'expires_at' => time() + 3600
+        ];
+        file_put_contents(TOKEN_CACHE_FILE, json_encode($cacheData));
+    }
+    
+    return $accessToken;
+}
+
+/**
+ * Fetch new OAuth2 access token from service account
+ */
+function fetchNewAccessToken() {
+    if (!file_exists(SERVICE_ACCOUNT_KEY)) {
+        return null;
+    }
+    
+    $serviceAccount = json_decode(file_get_contents(SERVICE_ACCOUNT_KEY), true);
+    
+    if (!$serviceAccount) {
+        return null;
+    }
+    
+    // Create JWT header (URL-safe base64 encoded)
+    $headerEncoded = base64UrlEncode(json_encode(['alg' => 'RS256', 'typ' => 'JWT']));
+    
+    // Create JWT claim set (URL-safe base64 encoded)
+    $now = time();
+    $claims = [
+        'iss' => $serviceAccount['client_email'],
+        'scope' => FCM_SCOPES,
+        'aud' => 'https://oauth2.googleapis.com/token',
+        'iat' => $now,
+        'exp' => $now + 3600
+    ];
+    $claimsEncoded = base64UrlEncode(json_encode($claims));
+    
+    // Create signature input
+    $signatureInput = $headerEncoded . '.' . $claimsEncoded;
+    
+    $privateKey = openssl_pkey_get_private($serviceAccount['private_key']);
+    if (!$privateKey) {
+        return null;
+    }
+    
+    openssl_sign($signatureInput, $signature, $privateKey, OPENSSL_ALGO_SHA256);
+    $signatureEncoded = base64UrlEncode($signature);
+    
+    $jwt = $signatureInput . '.' . $signatureEncoded;
+    
+    // Exchange JWT for access token
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, 'https://oauth2.googleapis.com/token');
+    curl_setopt($ch, CURLOPT_POST, true);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query([
+        'grant_type' => 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+        'assertion' => $jwt
+    ]));
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/x-www-form-urlencoded']);
+    
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    
+    if ($httpCode !== 200) {
+        return null;
+    }
+    
+    $tokenData = json_decode($response, true);
+    return $tokenData['access_token'] ?? null;
+}
+
+/**
+ * Send FCM notification using HTTP v1 API
+ */
+function sendFcmNotification($fcmToken, $title, $body, $data = []) {
+    // Get service account for project ID
+    if (!file_exists(SERVICE_ACCOUNT_KEY)) {
+        return ['success' => false, 'error' => 'FCM service account not configured'];
+    }
+    
+    $serviceAccount = json_decode(file_get_contents(SERVICE_ACCOUNT_KEY), true);
+    if (!$serviceAccount || !isset($serviceAccount['project_id'])) {
+        return ['success' => false, 'error' => 'Invalid service account configuration'];
+    }
+    
+    $projectId = $serviceAccount['project_id'];
+    
+    // Get access token
+    $accessToken = getAccessToken();
+    if (!$accessToken) {
+        return ['success' => false, 'error' => 'Failed to obtain access token'];
+    }
+    
+    // Build FCM message
+    $message = [
+        'message' => [
+            'token' => $fcmToken,
+            'notification' => [
+                'title' => $title,
+                'body' => $body
+            ]
+        ]
+    ];
+    
+    // Add custom data if provided
+    if (!empty($data)) {
+        $message['message']['data'] = array_map('strval', $data);
+    }
+    
+    // Send to FCM HTTP v1 API
+    $url = "https://fcm.googleapis.com/v1/projects/{$projectId}/messages:send";
+    
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, $url);
+    curl_setopt($ch, CURLOPT_POST, true);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($message));
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, [
+        'Content-Type: application/json',
+        'Authorization: Bearer ' . $accessToken
+    ]);
+    
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $error = curl_error($ch);
+    curl_close($ch);
+    
+    if ($error) {
+        return ['success' => false, 'error' => 'CURL error: ' . $error];
+    }
+    
+    if ($httpCode >= 200 && $httpCode < 300) {
+        $responseData = json_decode($response, true);
+        return ['success' => true, 'message_id' => $responseData['name'] ?? null];
+    }
+    
+    $errorResponse = json_decode($response, true);
+    $errorMessage = $errorResponse['error']['message'] ?? 'Unknown FCM error';
+    return ['success' => false, 'error' => $errorMessage];
+}
+
+/**
+ * Handle device registration
+ */
+function handleRegister() {
+    validateSecretKey();
+    
+    // Get request body
+    $input = json_decode(file_get_contents('php://input'), true);
+    
+    // Fall back to POST data
+    if (!$input) {
+        $input = $_POST;
+    }
+    
+    $fcmToken = $input['fcm_token'] ?? null;
+    $deviceInfo = $input['device_info'] ?? 'Unknown device';
+    
+    if (!$fcmToken) {
+        sendError('FCM token is required');
+    }
+    
+    // Check if device is already registered
+    $existingDevice = findDeviceByFcmToken($fcmToken);
+    
+    if ($existingDevice) {
+        sendResponse([
+            'success' => true,
+            'api_key' => $existingDevice['api_key'],
+            'message' => 'Device already registered'
+        ]);
+    }
+    
+    // Generate new API key and register device
+    $apiKey = generateApiKey();
+    
+    try {
+        registerDevice($fcmToken, $apiKey, $deviceInfo);
+        
+        sendResponse([
+            'success' => true,
+            'api_key' => $apiKey,
+            'message' => 'Device registered successfully'
+        ]);
+    } catch (PDOException $e) {
+        sendError('Failed to register device: ' . $e->getMessage(), 500);
+    }
+}
+
+/**
+ * Handle sending notification
+ */
+function handleSendNotification() {
+    // Get parameters from various sources
+    $input = json_decode(file_get_contents('php://input'), true) ?: [];
+    
+    // Merge with GET and POST parameters
+    $params = array_merge($_GET, $_POST, $input);
+    
+    // Get API key (k parameter or api_key)
+    $apiKey = $params['k'] ?? $params['api_key'] ?? null;
+    $title = $params['t'] ?? $params['title'] ?? null;
+    $content = $params['c'] ?? $params['content'] ?? $params['body'] ?? null;
+    $url = $params['u'] ?? $params['url'] ?? '';
+    
+    // Validate required parameters
+    if (!$apiKey) {
+        sendError('API key (k) is required');
+    }
+    if (!$title) {
+        sendError('Title (t) is required');
+    }
+    if (!$content) {
+        sendError('Content (c) is required');
+    }
+    
+    // Find device by API key using SQLite
+    $device = findDeviceByApiKey($apiKey);
+    
+    if (!$device) {
+        sendError('Invalid API key', 401);
+    }
+    
+    $fcmToken = $device['fcm_token'];
+    
+    // Prepare notification data
+    $notificationData = [];
+    if ($url) {
+        $notificationData['url'] = $url;
+    }
+    
+    // Send notification via FCM
+    $result = sendFcmNotification($fcmToken, $title, $content, $notificationData);
+    
+    if ($result['success']) {
+        sendResponse([
+            'success' => true,
+            'message' => 'Notification sent successfully',
+            'message_id' => $result['message_id'] ?? null
+        ]);
+    } else {
+        sendError($result['error'], 500);
+    }
+}
+
+// Main routing
+$action = $_GET['action'] ?? 'message';
+
+switch ($action) {
+    case 'register':
+        handleRegister();
+        break;
+    
+    case 'send':
+    case 'message':
+        handleSendNotification();
+        break;
+    
+    default:
+        sendError('Invalid action', 400);
+}

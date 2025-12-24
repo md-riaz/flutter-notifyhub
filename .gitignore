@@ -43,3 +43,9 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# NotifyHub API data files
+*.db
+notifyhub.db
+service-account.json
+fcm_access_token.json
