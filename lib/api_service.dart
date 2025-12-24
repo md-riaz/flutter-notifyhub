@@ -6,7 +6,8 @@ import 'package:http/http.dart' as http;
 class ApiConfig {
   /// The base URL of your NotifyHub REST API
   /// Change this to your actual API URL
-  static const String baseUrl = 'http://your-server.com/api.php';
+  /// Note: Use HTTPS in production for secure communication
+  static const String baseUrl = 'https://your-server.com/api.php';
 
   /// Secret key for authentication between the app and API
   /// This should match the SECRET_KEY in your PHP api.php
@@ -106,11 +107,18 @@ class ApiService {
           'error': data['error'] ?? 'Failed to send notification',
         };
       } else {
-        final errorData = jsonDecode(response.body);
-        return {
-          'success': false,
-          'error': errorData['error'] ?? 'Server error: ${response.statusCode}',
-        };
+        try {
+          final errorData = jsonDecode(response.body);
+          return {
+            'success': false,
+            'error': errorData['error'] ?? 'Server error: ${response.statusCode}',
+          };
+        } catch (_) {
+          return {
+            'success': false,
+            'error': 'Server error: ${response.statusCode}',
+          };
+        }
       }
     } catch (e) {
       developer.log(

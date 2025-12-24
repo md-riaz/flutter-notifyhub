@@ -16,6 +16,8 @@
  */
 
 // Enable CORS for API access
+// Note: In production, replace '*' with your specific domain(s) for better security
+// Example: header('Access-Control-Allow-Origin: https://yourdomain.com');
 header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
 header('Access-Control-Allow-Headers: Content-Type, X-Secret-Key, Authorization');
@@ -31,6 +33,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 define('SECRET_KEY', getenv('NOTIFYHUB_SECRET_KEY') ?: 'your-secret-key-here');
 define('FCM_SERVICE_ACCOUNT_PATH', getenv('FCM_SERVICE_ACCOUNT_JSON') ?: __DIR__ . '/firebase-service-account.json');
 define('SQLITE_DB_PATH', __DIR__ . '/notifyhub.db');
+// Set to true to require secret key for sending notifications (more secure)
+// Set to false to allow sending with just the API key (compatible with third-party integrations)
+define('REQUIRE_SECRET_FOR_SEND', false);
 
 /**
  * Send JSON response
@@ -360,6 +365,11 @@ function handleRegister() {
  * Handle sending notification
  */
 function handleSendNotification() {
+    // Optionally require secret key for sending (configurable security)
+    if (REQUIRE_SECRET_FOR_SEND) {
+        validateSecretKey();
+    }
+    
     // Get parameters from various sources
     $input = json_decode(file_get_contents('php://input'), true) ?: [];
     
